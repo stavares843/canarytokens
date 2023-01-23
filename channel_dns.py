@@ -7,9 +7,10 @@ log = Logger()
 from constants import INPUT_CHANNEL_DNS
 from tokens import Canarytoken
 from canarydrop import Canarydrop
-from exception import NoCanarytokenPresent, NoCanarytokenFound
+from exception import NoCanarytokenPresent, NoCanarytokenFound, IncompleteRequest, DuplicateDNSRequest
 from channel import InputChannel
 from queries import get_canarydrop, get_all_canary_domains
+from redismanager import db, KEY_CACHED_DNS_REQUEST
 
 import settings
 import math
@@ -133,6 +134,17 @@ class ChannelDNS(InputChannel):
         data = {}
         data['mysql_username'] = base64.b32decode(username.replace('.','').replace('-','=').upper())
         return data
+    
+    def _cmd_data(self, computer_name=None, user_name=None):
+        data = {}
+        data['cmd_computer_name'] = 'Not Obtained'
+        data['cmd_user_name'] = 'Not Obtained'
+        if user_name and user_name != '':
+            data['cmd_user_name'] = user_name[1:]
+        if computer_name and computer_name != '':
+            data['cmd_computer_name'] = computer_name[1:]
+        return data
+
 
     def _linux_inotify_data(self, filename=None):
         data = {}
@@ -232,6 +244,7 @@ class ChannelDNS(InputChannel):
             dtrace_file_open     = re.compile('([0-9]+)\.([A-Za-z0-9-=]+)\.h\.([A-Za-z0-9.-=]+)\.f\.([A-Za-z0-9.-=]+)\.D2\.', re.IGNORECASE)
             desktop_ini_browsing = re.compile('([^\.]+)\.([^\.]+)\.?([^\.]*)\.ini\.', re.IGNORECASE)
             log4_shell           = re.compile('([A-Za-z0-9.-]*)\.L4J\.', re.IGNORECASE)
+            cmd_computername     = re.compile('(.+)\.UN\.(.+)\.CMD\.', re.IGNORECASE)
 
             m = desktop_ini_browsing.match(value)
             if m:
@@ -267,6 +280,10 @@ class ChannelDNS(InputChannel):
             m = log4_shell.match(value)
             if m:
                 return self._log4_shell(computer_name=m.group(1))
+            
+            m = cmd_computername.match(value)
+            if m:
+                return self._cmd_data(computer_name=m.group(1), user_name=m.group(2))
 
         except Exception as e:
             log.error(e)
@@ -299,6 +316,22 @@ class ChannelDNS(InputChannel):
 
             canarydrop = Canarydrop(**get_canarydrop(canarytoken=token.value()))
 
+            if canarydrop._drop['type'] == 'cmd':
+                query_cmp = query.name.name.lower()
+                cmd_regex = re.compile('(.+)\.UN\.(.+)\.CMD\.', re.IGNORECASE)
+                valid = cmd_regex.match(query_cmp)
+
+                # Ignore incomplete sensitive cmd requests
+                if not valid:
+                    raise IncompleteRequest('Incomplete request for sensitive cmd token')
+
+                # Ignore duplicate requests
+                cached_key = KEY_CACHED_DNS_REQUEST + query_cmp
+                if db.exists(cached_key):
+                    log.debug('Ignoring duplicate DNS request')
+                    raise DuplicateDNSRequest('Duplicate request for sensitive cmd token')
+                db.setex(cached_key, settings.CACHED_DNS_REQUEST_PERIOD, True)
+
             src_data = self.look_for_source_data(token=token.value(), value=query.name.name)
 
             if canarydrop._drop['type'] == 'my_sql':
@@ -307,7 +340,7 @@ class ChannelDNS(InputChannel):
             else:
                 self.dispatch(canarydrop=canarydrop, src_ip=src_ip, src_data=src_data)
 
-        except (NoCanarytokenPresent, NoCanarytokenFound):
+        except (NoCanarytokenPresent, NoCanarytokenFound, DuplicateDNSRequest, IncompleteRequest):
             # If we dont find a canarytoken, lets just continue. No need to log.
             pass
         except Exception as e:
@@ -384,6 +417,10 @@ class ChannelDNS(InputChannel):
             if 'log4_shell_computer_name' in kwargs['src_data']:
                 additional_report += '\nComputer name from Log4J shell: {computer_name}'\
                     .format(computer_name=kwargs['src_data']['log4_shell_computer_name'])
+            
+            if 'cmd_computer_name' in kwargs['src_data'] and 'cmd_user_name' in kwargs['src_data']:
+                additional_report += '\nCommand execution on {computer_name} by {user_name}'\
+                    .format(computer_name=kwargs['src_data']['cmd_computer_name'], user_name=kwargs['src_data']['cmd_user_name'])
 
         return additional_report
 

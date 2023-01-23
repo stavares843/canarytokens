@@ -111,6 +111,8 @@
                 <b>IP:</b> {{ canarydrop['triggered_list'][item]['src_ip'] }}
   {% if canarydrop['type'] == 'aws_keys' %}
                                   <b>Channel:</b> AWS API Key Token
+  {% elif canarydrop['type'] == 'azure_id' %}
+                                  <b>Channel:</b> Azure Login Certificate Token
   {% else %}
                                   <b>Channel:</b> {{ canarydrop['triggered_list'][item]['input_channel'] }}
   {% endif %}
@@ -206,9 +208,7 @@
                 <td>
                   Memo
                 </td>
-                <td>
-                  {{ canarydrop['memo']|e }}
-                </td>
+                <td style="white-space: pre-line;">{{ canarydrop['memo']|e }}</td>
               </tr>
   {% for field in canarydrop['triggered_list'][item] %}
     {% if canarydrop['triggered_list'][item][field] != None and
@@ -282,6 +282,23 @@
                 </td>
                 <td>
                   {{ canarydrop['triggered_list'][item][field]['generic_data']|e }}
+                </td>
+              </tr>
+        {% elif field == 'src_data' and field in canarydrop['triggered_list'][item] and 'cmd_computer_name' in canarydrop['triggered_list'][item][field] and 'cmd_user_name' in canarydrop['triggered_list'][item][field] %}
+              <tr class="info_row">
+                <td>
+                  User executing command
+                </td>
+                <td>
+                  {{ canarydrop['triggered_list'][item][field]['cmd_user_name']|e }}
+                </td>
+              </tr>
+              <tr class="info_row">
+                <td>
+                  Computer executing command
+                </td>
+                <td>
+                  {{ canarydrop['triggered_list'][item][field]['cmd_computer_name']|e }}
                 </td>
               </tr>
         {% elif canarydrop['triggered_list'][item][field] %}
@@ -370,6 +387,7 @@
       <footer class="footer">
         <p>Brought to you by <a href="https://canary.tools/" target="_blank">Thinkst Canary</a>, our insanely easy-to-use honeypot solution that deploys in just 3 minutes. <strong>Know. When it matters.</strong></p>
         <p>&copy; Thinkst Canary 2015&ndash;{{now.year}}</p>
+        <p>By using this service, you agree with our <a href="/legal">terms of use.</a></p>
         <p id="mainsite" class="hidden">This <a href="https://canarytokens.org/">Canarytokens</a> installation is unaffiliated with Thinkst Canary.</p>
       </footer>
 

@@ -20,11 +20,11 @@ import pyqrcode
 
 from tokens import Canarytoken
 from canarydrop import Canarydrop
-from queries import save_canarydrop, save_imgur_token, get_canarydrop,\
+from queries import is_valid_email, save_canarydrop, save_imgur_token, get_canarydrop,\
                     create_linkedin_account, create_bitcoin_account,\
                     get_linkedin_account, get_bitcoin_account, \
                     save_clonedsite_token, get_all_canary_sites, get_canary_google_api_key,\
-                    is_webhook_valid, get_aws_keys, get_all_canary_domains
+                    is_webhook_valid, get_azure_id, get_aws_keys, get_all_canary_domains, is_email_blocked
 
 from exception import NoCanarytokenPresent
 from ziplib import make_canary_zip
@@ -34,6 +34,7 @@ from msexcel import make_canary_msexcel
 from kubeconfig import get_kubeconfig
 from mysql import make_canary_mysql_dump
 from authenticode import make_canary_authenticode_binary
+from msreg import make_canary_msreg
 import settings
 import datetime
 import tempfile
@@ -43,8 +44,11 @@ from cStringIO import StringIO
 import csv
 import wireguard as wg
 
-env = Environment(loader=FileSystemLoader('templates'),
+unsafe_env = Environment(loader=FileSystemLoader('templates'),
                   extensions=['jinja2.ext.loopcontrols'])
+env = Environment(loader=FileSystemLoader('templates'),
+                  extensions=['jinja2.ext.loopcontrols'],
+                  autoescape=True)
 
 with open('/srv/templates/error_http.html', 'r') as f:
     twisted.web.resource.ErrorPage.template = f.read()
@@ -58,7 +62,7 @@ class GeneratorPage(resource.Resource):
         return Resource.getChild(self, name, request)
 
     def render_GET(self, request):
-        template = env.get_template('generate_new.html')
+        template = unsafe_env.get_template('generate_new.html')
         sites_len = len(get_all_canary_sites())
         now = datetime.datetime.now()
         return template.render(settings=settings, sites_len=sites_len, now=now).encode('utf8')
@@ -80,6 +84,7 @@ class GeneratorPage(resource.Resource):
                 token_type = request.args.get('type', None)[0]
                 if token_type not in ['web',
                                       'dns',
+                                      'cmd',
                                       'web_image',
                                       'ms_word',
                                       'ms_excel',
@@ -93,6 +98,7 @@ class GeneratorPage(resource.Resource):
                                       'sql_server',
                                       'my_sql',
                                       'aws_keys',
+                                      'azure_id',
                                       'signed_exe',
                                       'fast_redirect',
                                       'slow_redirect',
@@ -107,22 +113,37 @@ class GeneratorPage(resource.Resource):
                 webhook = request.args.get('webhook', None)[0]
                 if not email and not webhook:
                     response['Error'] = 1
+                    response['Error_Message'] = 'No email/webhook supplied'
                     raise Exception('No email/webhook supplied')
             except IndexError:
                 response['Error'] = 1
+                response['Error_Message'] = 'No email supplied'
                 raise Exception('No email supplied')
             try:
                 memo  = ''.join(request.args.get('memo', None))
                 if not memo:
                     response['Error'] = 2
+                    response['Error_Message'] = 'No memo supplied'
                     raise Exception('No memo supplied')
             except TypeError:
                 response['Error'] = 2
+                response['Error_Message'] = 'No memo supplied'
                 raise Exception('No memo supplied')
 
             if webhook and not is_webhook_valid(webhook):
                 response['Error'] = 3
+                response['Error_Message'] = 'Invalid webhook supplied. Confirm you can POST to this URL.'
                 raise Exception('Invalid webhook supplied. Confirm you can POST to this URL.')
+
+            if email:
+                if not is_valid_email(email):
+                    response['Error'] = 5
+                    response['Error_Message'] = 'Invalid email supplied'
+                    raise Exception('Invalid email supplied')
+                if is_email_blocked(email):
+                    response['Error'] = 6
+                    response['Error_Message'] = 'Blocked email supplied. Please see our Acceptable Use Policy at https://canarytokens.org/legal'
+                    raise Exception('Blocked email supplied. Please see our Acceptable Use Policy at https://canarytokens.org/legal')
 
             alert_email_enabled = False if not email else True
             alert_webhook_enabled = False if not webhook else True
@@ -191,6 +212,18 @@ class GeneratorPage(resource.Resource):
                 pass
 
             try:
+                procname = request.args['cmd_process'][0]
+                if not procname:
+                    raise KeyError
+
+                canarydrop['cmd_process'] = procname
+                canarydrop['memo'] += "\r\n\r\n(This token was created to monitor the execution of: " + procname + ")"
+                save_canarydrop(canarydrop)
+            except (IndexError, KeyError):
+                pass
+
+
+            try:
                 if not request.args.get('type', None)[0] == 'qr_code':
                     raise Exception()
                 response['qrcode_png'] = canarydrop.get_qrcode_data_uri_png()
@@ -213,6 +246,26 @@ class GeneratorPage(resource.Resource):
                 canarydrop['aws_secret_access_key'] = keys[1]
                 canarydrop['region'] = keys[2]
                 canarydrop['output'] = keys[3]
+                save_canarydrop(canarydrop)
+            except:
+                pass
+
+            try:
+                if not request.args.get('type', None)[0] == 'azure_id':
+                    raise Exception()
+                keys = get_azure_id(token=canarytoken.value(), server=get_all_canary_domains()[0])
+                if not keys:
+                    response['Error'] = 4
+                    response['Error_Message'] = 'Failed to retrieve Azure ID. Please contact support@thinkst.com.'
+                    raise Exception()
+                azure_id_cert_file_name = request.args['azure_id_cert_file_name'][0]
+                if not azure_id_cert_file_name:
+                    raise Exception()
+                response['app_id'] = canarydrop['app_id'] = keys[0]
+                response['cert'] = canarydrop['cert'] = keys[1]
+                response['tenant_id'] = canarydrop['tenant_id'] = keys[2]
+                response['cert_name'] = canarydrop['cert_name'] = keys[3]
+                response['cert_file_name'] = canarydrop['cert_file_name'] = azure_id_cert_file_name
                 save_canarydrop(canarydrop)
             except:
                 pass
@@ -392,6 +445,10 @@ class DownloadPage(resource.Resource):
                                   'attachment; filename={token}.xlsx'\
                                   .format(token=token))
                 return make_canary_msexcel(url=canarydrop.get_url())
+            elif fmt == 'cmd':
+                request.setHeader("Content-Type", "text/plain")
+                request.setHeader("Content-Disposition", 'attachment; filename={token}.reg'.format(token=token))
+                return make_canary_msreg(url=canarydrop.get_hostname(), process_name=canarydrop['cmd_process'])
             elif fmt == 'pdf':
                 request.setHeader("Content-Type", "application/pdf")
                 request.setHeader("Content-Disposition",
@@ -404,6 +461,12 @@ class DownloadPage(resource.Resource):
                                   'attachment; filename=credentials')
                 text="[default]\naws_access_key={id}\naws_secret_access_key={k}\nregion={r}\noutput={o}"\
                         .format(id=canarydrop['aws_access_key_id'], k=canarydrop['aws_secret_access_key'], r=canarydrop['region'], o=canarydrop['output'])
+                return text
+            elif fmt == 'azure_id':
+                request.setHeader("Content-Type", "text/plain")
+                request.setHeader("Content-Disposition",
+                                  'attachment; filename={file_name}'.format(file_name=canarydrop['cert_file_name']))
+                text="{cert}".format(cert=canarydrop['cert'])
                 return text
             elif fmt == 'kubeconfig':
                 request.setHeader("Content-Type", "text/plain")
@@ -504,7 +567,7 @@ class DownloadPage(resource.Resource):
 
         except Exception as e:
             log.error('Unexpected error in POST download: {err}'.format(err=e))
-            template = env.get_template('error.html')
+            template = unsafe_env.get_template('error.html')
             return template.render(error=e.message).encode('utf8')
 
         return NoResource().render(request)
@@ -537,9 +600,9 @@ class ManagePage(resource.Resource):
         now = datetime.datetime.now()
         try:
             canarydrop['type']
-            template = env.get_template('manage_new.html')
+            template = unsafe_env.get_template('manage_new.html')
         except KeyError:
-            template = env.get_template('manage.html')
+            template = unsafe_env.get_template('manage.html')
         return template.render(canarydrop=canarydrop, API_KEY=g_api_key, now=now).encode('utf8')
 
     def render_POST(self, request):
@@ -588,14 +651,14 @@ class ManagePage(resource.Resource):
             save_canarydrop(canarydrop=canarydrop)
 
             g_api_key = get_canary_google_api_key()
-            template = env.get_template('manage.html')
+            template = unsafe_env.get_template('manage.html')
             return template.render(canarydrop=canarydrop, saved=True,
                                         settings=settings, API_KEY=g_api_key).encode('utf8')
 
         except Exception as e:
             import traceback
             log.error('Exception in manage.html: {e}, {stack}'.format(e=e, stack=traceback.format_exc()))
-            template = env.get_template('manage.html')
+            template = unsafe_env.get_template('manage.html')
             return template.render(canarydrop=canarydrop, error=e,
                                         settings=settings).encode('utf8')
 
@@ -698,6 +761,19 @@ class SettingsPage(resource.Resource):
 
         return simplejson.dumps(response)
 
+class AUP(resource.Resource):
+    isLeaf = True
+
+    def getChild(self, name, request):
+        if name == '':
+            return self
+        return Resource.getChild(self, name, request)
+
+    def render_GET(self, request):
+        now = datetime.datetime.now()
+        template = unsafe_env.get_template('legal.html')
+        return template.render(now=now).encode('utf8')
+
 class CanarytokensHttpd():
     def __init__(self, port=80):
         self.port = port
@@ -705,14 +781,21 @@ class CanarytokensHttpd():
         root = Resource()
         root.putChild("", Redirect("generate"))
         root.putChild("generate", GeneratorPage())
-        root.putChild("manage", ManagePage())
         root.putChild("download", DownloadPage())
-        root.putChild("settings", SettingsPage())
         root.putChild("history", HistoryPage())
+        root.putChild("legal", AUP())
+        root.putChild("manage", ManagePage())
         root.putChild("resources", LimitedFile("/srv/templates/static"))
+        root.putChild("settings", SettingsPage())
+
+        well_known = Resource()
+        root.putChild(".well-known", well_known)
 
         with open('/srv/templates/robots.txt', 'r') as f:
             root.putChild("robots.txt", Data(f.read(), "text/plain"))
+
+        with open('/srv/templates/security.txt', 'r') as f:
+            well_known.putChild("security.txt", Data(f.read(), "text/plain"))
 
         wrapped = EncodingResourceWrapper(root, [GzipEncoderFactory()])
         site = server.Site(wrapped)

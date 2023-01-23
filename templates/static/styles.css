@@ -260,7 +260,7 @@
 
       .wrapper-dropdown.active .dropdown {
           border-bottom: 1px solid rgba(0,0,0,0.2);
-          max-height: 400px;
+          max-height: 443px;
           overflow: scroll;
       }
 
@@ -540,6 +540,9 @@
       a.icon-aws:before {
         background-image: url("/resources/aws.png");
       }
+      a.icon-azureid:before {
+        background-image: url("/resources/azure-id.png");
+      }
       a.icon-redirect:before {
         background-image: url("/resources/redirect.png");
       }
@@ -548,6 +551,9 @@
       }
       a.icon-log4shell:before {
         background-image: url("/resources/log4j.png");
+      }
+      a.icon-msreg:before {
+        background-image: url("/resources/msreg.png");
       }
 
       @media (max-width: 768px) {
